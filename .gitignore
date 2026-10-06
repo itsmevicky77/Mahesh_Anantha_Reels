@@ -1,0 +1,6 @@
+node_modules/
+blood-tube-macro/node_modules/
+blood-tube-macro/snapshots/
+blood-tube-macro/.hyperframes/
+*.log
+renders/tmp*/
