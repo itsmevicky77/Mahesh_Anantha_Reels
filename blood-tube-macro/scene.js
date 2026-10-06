@@ -21,7 +21,12 @@ const FOCAL = 0.1;
 const SENSOR_H = 0.036;
 const F_STOP = 5.6;
 const VFOV = THREE.MathUtils.radToDeg(2 * Math.atan(SENSOR_H / 2 / FOCAL));
-const MAX_COC_PX = 44;
+// Fast mode: the 3D passes run at half resolution and the grade upsamples
+// to the 1080x1920 canvas (grain is added at full res). ~4x cheaper per frame.
+const RS = 0.5;
+const RW = Math.round(W * RS);
+const RH = Math.round(H * RS);
+const MAX_COC_PX = 44 * RS;
 
 // Tube dimensions (13 x 100 mm vacuum collection tube).
 const TUBE_R = 0.0065;
@@ -72,6 +77,7 @@ renderer.toneMapping = THREE.NoToneMapping;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 RectAreaLightUniformsLib.init();
+if ("transmissionResolutionScale" in renderer) renderer.transmissionResolutionScale = RS;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x07090c);
@@ -143,7 +149,7 @@ const keyShadow = new THREE.SpotLight(0xeef4ff, 2.2, 3, THREE.MathUtils.degToRad
 keyShadow.position.set(0.06, 0.85, 0.22);
 keyShadow.target.position.set(0, 0.04, 0);
 keyShadow.castShadow = true;
-keyShadow.shadow.mapSize.set(2048, 2048);
+keyShadow.shadow.mapSize.set(1024, 1024);
 keyShadow.shadow.camera.near = 0.3;
 keyShadow.shadow.camera.far = 1.4;
 keyShadow.shadow.bias = -0.00008;
@@ -1006,15 +1012,15 @@ function loadHand() {
 // ---------------------------------------------------------------------------
 // Post: depth of field (scatter-as-gather on a golden-angle spiral), bloom,
 // then a filmic grade with vignette, halation-like warmth and fine grain.
-const rtScene = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples: 4 });
+const rtScene = new THREE.WebGLRenderTarget(RW, RH, { type: THREE.HalfFloatType, samples: 4 });
 // Depth for the DOF comes from its own single-sample pass: MSAA depth resolve
 // is not reliable on every backend.
-const rtDepth = new THREE.WebGLRenderTarget(W, H, {
-  depthTexture: new THREE.DepthTexture(W, H, THREE.FloatType),
+const rtDepth = new THREE.WebGLRenderTarget(RW, RH, {
+  depthTexture: new THREE.DepthTexture(RW, RH, THREE.FloatType),
 });
 rtDepth.depthTexture.format = THREE.DepthFormat;
 const depthOnlyMat = new THREE.MeshBasicMaterial({ colorWrite: false });
-const rtDof = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType });
+const rtDof = new THREE.WebGLRenderTarget(RW, RH, { type: THREE.HalfFloatType });
 
 const dofMat = new THREE.ShaderMaterial({
   uniforms: {
@@ -1025,7 +1031,7 @@ const dofMat = new THREE.ShaderMaterial({
     uFocus: { value: 0.5 },
     uK: { value: 0 },
     uMaxCoc: { value: MAX_COC_PX },
-    uRes: { value: new THREE.Vector2(W, H) },
+    uRes: { value: new THREE.Vector2(RW, RH) },
     uShowCoc: { value: 0 },
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
@@ -1083,16 +1089,16 @@ const dofQuad = new FullScreenQuad(dofMat);
 
 // Post-filter: a CoC-scaled tent over the gathered result removes the sparse
 // sampling noise in large bokeh without softening in-focus detail.
-const rtDof2 = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType });
+const rtDof2 = new THREE.WebGLRenderTarget(RW, RH, { type: THREE.HalfFloatType });
 const dofFilterMat = new THREE.ShaderMaterial({
-  uniforms: { tSrc: { value: rtDof.texture }, uRes: { value: new THREE.Vector2(W, H) } },
+  uniforms: { tSrc: { value: rtDof.texture }, uRes: { value: new THREE.Vector2(RW, RH) } },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
   fragmentShader: /* glsl */ `
     precision highp float;
     uniform sampler2D tSrc; uniform vec2 uRes; varying vec2 vUv;
     void main(){
       vec4 c = texture2D(tSrc, vUv);
-      float r = clamp(c.a * 0.42, 0.0, 14.0);
+      float r = clamp(c.a * 0.42, 0.0, 7.0);
       if (r < 0.75) { gl_FragColor = c; return; }
       vec3 acc = c.rgb; float ws = 1.0;
       for (int i = 0; i < 16; i++){
@@ -1110,7 +1116,7 @@ const dofFilterMat = new THREE.ShaderMaterial({
 });
 const dofFilterQuad = new FullScreenQuad(dofFilterMat);
 
-const bloom = new UnrealBloomPass(new THREE.Vector2(W / 2, H / 2), 0.22, 0.55, 1.6);
+const bloom = new UnrealBloomPass(new THREE.Vector2(RW / 2, RH / 2), 0.22, 0.55, 1.6);
 
 const gradeMat = new THREE.ShaderMaterial({
   uniforms: {
@@ -1225,7 +1231,7 @@ function renderAt(time) {
   const aperture = FOCAL / F_STOP;
   const kMeters = (aperture * FOCAL) / (focus - FOCAL);
   dofMat.uniforms.uFocus.value = focus;
-  dofMat.uniforms.uK.value = (kMeters / SENSOR_H) * H * 0.5; // radius in px
+  dofMat.uniforms.uK.value = (kMeters / SENSOR_H) * RH * 0.5; // radius in px
   dofMat.uniforms.uNear.value = camera.near;
   dofMat.uniforms.uFar.value = camera.far;
 
